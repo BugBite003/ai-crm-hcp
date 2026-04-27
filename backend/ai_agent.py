@@ -17,8 +17,11 @@ from tools import (
 load_dotenv()
 
 # ── LLM (primary: gemma2-9b-it as required) ──────────────────────────────────
+# ── LLM configuration ─────────────────────────────────────────────────────────
+DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
 llm = ChatGroq(
-    model="gemma2-9b-it",
+    model="GROQ_MODEL",
     api_key=os.getenv("GROQ_API_KEY")
 )
 
@@ -33,7 +36,7 @@ class AgentState(TypedDict):
 # ── Node 1: Classify Intent ───────────────────────────────────────────────────
 def classify_intent_node(state: AgentState) -> AgentState:
     """
-    Uses gemma2-9b-it to decide which tool to invoke
+    Uses the configured Groq model to decide which tool to invoke
     based on the user's natural-language input.
     """
     prompt = f"""
@@ -124,7 +127,7 @@ def sentiment_node(state: AgentState) -> AgentState:
 def format_response_node(state: AgentState) -> AgentState:
     """
     Converts the raw tool_result dict into a friendly
-    human-readable response using gemma2-9b-it.
+    human-readable response using the configured Groq model.
     """
     prompt = f"""
 You are a helpful CRM assistant for pharmaceutical field representatives.
@@ -205,4 +208,4 @@ def run_agent(text: str) -> dict:
         "response": final_state["output"],
         "intent": final_state["intent"],
         "tool_result": final_state["tool_result"]
-    }
+    }   

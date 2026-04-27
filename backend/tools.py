@@ -6,8 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_MODEL = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
+
 llm = ChatGroq(
-    model="gemma2-9b-it",
+    model="GROQ_MODEL",
     api_key=os.getenv("GROQ_API_KEY")
 )
 
@@ -23,7 +26,7 @@ def get_connection():
 
 # ─────────────────────────────────────────────
 # TOOL 1: Log Interaction
-# Uses Groq gemma2-9b-it to extract structured
+# Uses Groq the configured Groq model to extract structured
 # entities from free-text, then saves to DB.
 # ─────────────────────────────────────────────
 def log_interaction_tool(data: dict) -> dict:
@@ -210,7 +213,7 @@ def get_hcp_profile_tool(hcp_name: str) -> dict:
 # ─────────────────────────────────────────────
 def suggest_followup_tool(interaction_data: dict) -> dict:
     """
-    Uses gemma2-9b-it to analyse the interaction
+    Uses the configured Groq model to analyse the interaction
     and generate 3 specific, actionable follow-ups.
     """
     prompt = f"""
@@ -263,7 +266,7 @@ Return only the JSON, no markdown fences.
 # ─────────────────────────────────────────────
 def analyse_sentiment_tool(notes: str) -> dict:
     """
-    Uses gemma2-9b-it to perform sentiment analysis
+    Uses the configured Groq model to perform sentiment analysis
     on interaction notes and return label + explanation.
     """
     prompt = f"""

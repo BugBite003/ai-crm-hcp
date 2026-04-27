@@ -19,9 +19,19 @@ load_dotenv()
 
 app = FastAPI(title="AI-First CRM HCP Module", version="1.0.0")
 
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+allowed_origins = os.getenv("CORS_ALLOW_ORIGINS")
+if allowed_origins:
+    cors_origins = [origin.strip() for origin in allowed_origins.split(",") if origin.strip()]
+else:
+    cors_origins = default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,7 +119,7 @@ def get_hcp(hcp_name: str):
 # ── Tool 4: Suggest Follow-up ─────────────────────────────────────────────────
 @app.post("/suggest-followup")
 def suggest_followup(data: FollowUpRequest):
-    """Generates AI-powered follow-up suggestions using gemma2-9b-it."""
+    """Generates AI-powered follow-up suggestions using the configured Groq model."""
     result = suggest_followup_tool(data.model_dump())
     return result
 
@@ -117,7 +127,7 @@ def suggest_followup(data: FollowUpRequest):
 # ── Tool 5: Analyse Sentiment ─────────────────────────────────────────────────
 @app.post("/analyse-sentiment")
 def analyse_sentiment(data: SentimentRequest):
-    """Analyses HCP sentiment from interaction notes using gemma2-9b-it."""
+    """Analyses HCP sentiment from interaction notes using the configured Groq model.."""
     result = analyse_sentiment_tool(data.notes)
     return result
 
@@ -129,8 +139,11 @@ def chat(body: ChatMessage):
     Main LangGraph agent endpoint. Classifies intent and
     routes to the appropriate tool automatically.
     """
-    result = run_agent(body.message)
-    return result
+    try:
+        result = run_agent(body.message)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(exc)}")
 
 
 # ── List all interactions ─────────────────────────────────────────────────────
