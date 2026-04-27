@@ -14,7 +14,12 @@ llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-
+def _safe_llm_invoke(prompt: str) -> str | None:
+    try:
+        return llm.invoke(prompt).content.strip()
+    except Exception:
+        return None
+    
 def get_connection():
     return pymysql.connect(
         host=os.getenv("DB_HOST", "localhost"),
@@ -52,7 +57,7 @@ Interaction description:
 
 Return only the JSON, no explanation, no markdown fences.
 """
-        response = llm.invoke(prompt).content.strip()
+        response = _safe_llm_invoke(prompt) or ""
         # Strip markdown fences if model adds them
         if response.startswith("```"):
             response = response.split("```")[1]
@@ -74,34 +79,37 @@ Return only the JSON, no explanation, no markdown fences.
             }
         data = extracted
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    query = """
-        INSERT INTO interactions
-        (hcp_name, interaction_type, date, time, attendees,
-         topics_discussed, sentiment, outcomes, follow_up)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """
-    cursor.execute(query, (
-        data.get("hcp_name", ""),
-        data.get("interaction_type", "Meeting"),
-        data.get("date", "2026-04-27"),
-        data.get("time", "12:00:00"),
-        data.get("attendees", ""),
-        data.get("topics_discussed", ""),
-        data.get("sentiment", "Neutral"),
-        data.get("outcomes", ""),
-        data.get("follow_up", "")
-    ))
-    conn.commit()
-    interaction_id = cursor.lastrowid
-    conn.close()
-    return {
-        "status": "success",
-        "message": "Interaction logged successfully",
-        "interaction_id": interaction_id,
-        "extracted_data": data
-    }
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO interactions
+            (hcp_name, interaction_type, date, time, attendees,
+                topics_discussed, sentiment, outcomes, follow_up)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (
+            data.get("hcp_name", ""),
+            data.get("interaction_type", "Meeting"),
+            data.get("date", "2026-04-27"),
+            data.get("time", "12:00:00"),
+            data.get("attendees", ""),
+            data.get("topics_discussed", ""),
+            data.get("sentiment", "Neutral"),
+            data.get("outcomes", ""),
+            data.get("follow_up", "")
+        ))
+        conn.commit()
+        interaction_id = cursor.lastrowid
+        conn.close()
+        return {
+            "status": "success",
+            "message": "Interaction logged successfully",
+            "interaction_id": interaction_id,
+            "extracted_data": data
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to log interaction: {str(exc)}"}
 
 
 # ─────────────────────────────────────────────
@@ -115,55 +123,58 @@ def edit_interaction_tool(interaction_id: int, updates: dict) -> dict:
     If 'notes_patch' is provided, the LLM merges the new
     text with existing topics_discussed.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
     # Fetch current record
-    cursor.execute(
-        "SELECT * FROM interactions WHERE id = %s", (interaction_id,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return {"status": "error", "message": f"Interaction {interaction_id} not found"}
+        cursor.execute(
+            "SELECT * FROM interactions WHERE id = %s", (interaction_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return {"status": "error", "message": f"Interaction {interaction_id} not found"}
 
-    cols = [desc[0] for desc in cursor.description]
-    current = dict(zip(cols, row))
+        cols = [desc[0] for desc in cursor.description]
+        current = dict(zip(cols, row))
 
     # If there's a free-text patch, use LLM to merge it
-    if "notes_patch" in updates:
-        merge_prompt = f"""
+        if "notes_patch" in updates:
+            merge_prompt = f"""
 You are editing a CRM interaction note.
 Existing topics discussed: \"{current['topics_discussed']}\"
 New information to merge: \"{updates['notes_patch']}\"
 Write a concise merged summary combining both. Return only the summary text.
 """
-        merged = llm.invoke(merge_prompt).content.strip()
-        updates["topics_discussed"] = merged
-        del updates["notes_patch"]
+            merged = _safe_llm_invoke(merge_prompt) or updates["notes_patch"]
+            updates["topics_discussed"] = merged
+            del updates["notes_patch"]
 
     # Build dynamic UPDATE
-    allowed_fields = {
-        "hcp_name", "interaction_type", "date", "time",
-        "attendees", "topics_discussed", "sentiment",
-        "outcomes", "follow_up"
-    }
-    filtered = {k: v for k, v in updates.items() if k in allowed_fields}
-    if not filtered:
+        allowed_fields = {
+            "hcp_name", "interaction_type", "date", "time",
+            "attendees", "topics_discussed", "sentiment",
+            "outcomes", "follow_up"
+        }
+        filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+        if not filtered:
+            conn.close()
+            return {"status": "error", "message": "No valid fields to update"}
+
+        set_clause = ", ".join(f"{k} = %s" for k in filtered)
+        values = list(filtered.values()) + [interaction_id]
+        cursor.execute(f"UPDATE interactions SET {set_clause} WHERE id = %s", values)
+        conn.commit()
         conn.close()
-        return {"status": "error", "message": "No valid fields to update"}
 
-    set_clause = ", ".join(f"{k} = %s" for k in filtered)
-    values = list(filtered.values()) + [interaction_id]
-    cursor.execute(f"UPDATE interactions SET {set_clause} WHERE id = %s", values)
-    conn.commit()
-    conn.close()
-
-    return {
-        "status": "success",
-        "message": f"Interaction {interaction_id} updated",
-        "updated_fields": list(filtered.keys())
-    }
+        return {
+            "status": "success",
+            "message": f"Interaction {interaction_id} updated",
+            "updated_fields": list(filtered.keys())
+        }
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to edit interaction: {str(exc)}"}
 
 
 # ─────────────────────────────────────────────
@@ -175,15 +186,18 @@ def get_hcp_profile_tool(hcp_name: str) -> dict:
     Retrieves all interactions for a given HCP
     and returns a summary with history.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM interactions WHERE hcp_name = %s ORDER BY date DESC",
-        (hcp_name,)
-    )
-    rows = cursor.fetchall()
-    cols = [desc[0] for desc in cursor.description]
-    conn.close()
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM interactions WHERE hcp_name = %s ORDER BY date DESC",
+            (hcp_name,)
+        )
+        rows = cursor.fetchall()
+        cols = [desc[0] for desc in cursor.description]
+        conn.close()
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to fetch HCP profile: {str(exc)}", "interactions": []}
 
     if not rows:
         return {
@@ -239,7 +253,7 @@ Return ONLY a JSON object with this structure:
 }}
 Return only the JSON, no markdown fences.
 """
-    response = llm.invoke(prompt).content.strip()
+    response = _safe_llm_invoke(prompt) or ""
     if response.startswith("```"):
         response = response.split("```")[1]
         if response.startswith("json"):
@@ -285,7 +299,7 @@ Return ONLY a JSON object:
 }}
 Return only the JSON, no markdown fences.
 """
-    response = llm.invoke(prompt).content.strip()
+    response = _safe_llm_invoke(prompt) or ""
     if response.startswith("```"):
         response = response.split("```")[1]
         if response.startswith("json"):

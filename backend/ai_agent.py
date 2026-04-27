@@ -25,6 +25,28 @@ llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
+def _safe_llm_invoke(prompt: str) -> str | None:
+    try:
+        return llm.invoke(prompt).content.strip()
+    except Exception:
+        return None
+
+
+def _heuristic_intent(message: str) -> str:
+    text = message.lower()
+    if any(word in text for word in ["edit", "update", "modify", "change"]):
+        return "edit_interaction"
+    if any(word in text for word in ["profile", "history", "interactions for", "show hcp"]):
+        return "get_hcp_profile"
+    if any(word in text for word in ["follow up", "follow-up", "next step", "next action"]):
+        return "suggest_followup"
+    if any(word in text for word in ["sentiment", "tone", "positive", "negative", "neutral"]):
+        return "analyse_sentiment"
+    if any(word in text for word in ["log", "record", "met", "meeting", "call", "visited"]):
+        return "log_interaction"
+    return "unknown"
+
+
 # ── Agent State ───────────────────────────────────────────────────────────────
 class AgentState(TypedDict):
     input: str
@@ -53,13 +75,14 @@ User message: "{state['input']}"
 
 Return ONLY the label, nothing else.
 """
-    intent = llm.invoke(prompt).content.strip().lower()
+    model_intent = _safe_llm_invoke(prompt)
+    intent = model_intent.lower() if model_intent else _heuristic_intent(state["input"])
     valid = {
         "log_interaction", "edit_interaction", "get_hcp_profile",
         "suggest_followup", "analyse_sentiment"
     }
     if intent not in valid:
-        intent = "log_interaction"  # safe default for chat logging
+        intent = _heuristic_intent(state["input"])
 
     return {**state, "intent": intent}
 
@@ -98,7 +121,7 @@ If no name found return "Unknown".
 
 Message: "{state['input']}"
 """
-    hcp_name = llm.invoke(prompt).content.strip()
+    hcp_name = _safe_llm_invoke(prompt) or "Unknown"
     result = get_hcp_profile_tool(hcp_name)
     return {**state, "tool_result": result}
 
@@ -139,13 +162,18 @@ Result: {json.dumps(state['tool_result'])}
 
 Return only the response text.
 """
-    output = llm.invoke(prompt).content.strip()
+    output = _safe_llm_invoke(prompt)
+    if not output:
+        output = (
+            f"I processed your request as `{state['intent']}`. "
+            f"Here is the result: {json.dumps(state['tool_result'])}"
+        )
     return {**state, "output": output}
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
 def route_to_tool(state: AgentState) -> Literal[
-    "log_node", "edit_node", "get_hcp_node", "suggest_node", "sentiment_node"
+    "log_node", "edit_node", "get_hcp_node", "suggest_node", "sentiment_node", "fallback_node"
 ]:
     routes = {
         "log_interaction": "log_node",
@@ -154,7 +182,17 @@ def route_to_tool(state: AgentState) -> Literal[
         "suggest_followup": "suggest_node",
         "analyse_sentiment": "sentiment_node",
     }
-    return routes.get(state["intent"], "log_node")
+    return routes.get(state["intent"], "fallback_node")
+
+
+def fallback_node(state: AgentState) -> AgentState:
+    return {
+        **state,
+        "tool_result": {
+            "status": "success",
+            "message": "I could not confidently map your message to a CRM action. Please clarify what you want to do."
+        }
+    }
 
 
 # ── Build LangGraph ───────────────────────────────────────────────────────────
@@ -166,6 +204,7 @@ graph.add_node("edit_node", edit_node)
 graph.add_node("get_hcp_node", get_hcp_node)
 graph.add_node("suggest_node", suggest_node)
 graph.add_node("sentiment_node", sentiment_node)
+graph.add_node("fallback_node", fallback_node)
 graph.add_node("format_response", format_response_node)
 
 graph.set_entry_point("classify_intent")
@@ -179,6 +218,7 @@ graph.add_conditional_edges(
         "get_hcp_node": "get_hcp_node",
         "suggest_node": "suggest_node",
         "sentiment_node": "sentiment_node",
+        "fallback_node": "fallback_node",
     }
 )
 
